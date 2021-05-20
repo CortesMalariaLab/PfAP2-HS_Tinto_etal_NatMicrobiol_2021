@@ -1,0 +1,913 @@
+Pipeline performed by Alfred Cortés (David Rossell and Evarist Planet)
+3D7-A and 3D7-A-HS Microarrays data analysis.
+____________________________________________
+
+soqueName <- '3d7' #'inputSoqueName' #to run all strains 
+
+#define user, to assign paths.
+#userName <- 'epl'
+userName <- 'alf'
+
+mc.cores <- 1
+oligoBadPath <- 'C:/Arxius Alfred/MicroarraysHeatshock/Analysis/ProgramesR/Files2executeProgram/ArrayReannot_plasmoDB7p0_Remove_blast_2ndHIT_70.csv'
+genesToRemove <- 'C:/Arxius Alfred/MicroarraysHeatshock/Analysis/ProgramesR/Files2executeProgram/ArrayReannot_plasmoDB7p0_2remove_Modif.txt'
+#In the modified "2remove" file I added the new oligos in the array for clag and other polymorphic genes in HB3, 7G8, D10 and Dd2.
+genesToRename.blast <- 'C:/Arxius Alfred/MicroarraysHeatshock/Analysis/ProgramesR/Files2executeProgram/ArrayReannot_plasmoDB7p0_2rename_Modif.csv'
+#In the modified "2rename" file I added _00 oligos for clag3.1 and clag3.2 assigning them to their genes.
+geneDescription <- 'C:/Arxius Alfred/MicroarraysHeatshock/Analysis/ProgramesR/Files2executeProgram/PfAnnotatedTranscripts_GeneDescription_PlasmoDB7p0.txt'
+#Txt file instead of .csv because .csv gives error (possibly because first row does not have value for second column and interprets as only one column).
+
+genesToRename.sd <- NA #'C:/Arxius Alfred/MicroarrayData/Programes/ProgramesEvarist&Rosell/Files2executeProgram/genesToRename_3d7.csv'
+#Those were genes for which different probes showed different patterns. In the final variantome analysis we did not use this list to separate probes within a gene with different patterns.
+
+bozdechPath <- 'C:/Arxius Alfred/MicroarraysHeatshock/Analysis/ProgramesR/Files2executeProgram/bozdech_Hb3_clean.csv'
+LemieuxFunctionsPath <- 'C:/Arxius Alfred/MicroarraysHeatshock/Analysis/ProgramesR/Files2executeProgram/lemieux_et_al_pipeline_functions.r'
+dir <- 'C:/Arxius Alfred/MicroarraysHeatshock/GPRs_BO'
+figuresPath <- 'C:/Arxius Alfred/MicroarraysHeatshock/Analysis/ResultsR'
+#Now all results will go to same folder, I will use dir to get the data but save all results in figures path, including tables.
+
+
+library(genefilter)
+library(xtable)
+library(Biobase)
+library(limma)
+
+########################################################################
+####  FUNCTIONS
+########################################################################
+
+boxplot.rawData <- function(x) {
+  x2plot <- lapply(x,function(x) log2(x$F635.Median) - log2(x$F532.Median))
+  x2plot <- do.call('cbind',x2plot)
+  boxplot(x2plot,main='log2(F635) - log2(F532)')
+}
+
+boxplot.rawData.noRatio <- function(x) {
+  x2plot <- lapply(x,function(x) log2(x$F635.Median))
+  x2plot <- do.call('cbind',x2plot)
+  boxplot(x2plot,main='log2(F635)')
+}
+
+myRma <- function(x) {
+  if (class(x)=='numeric') {
+    ans <- x
+  } else {
+    ans <- medpolish(x,trace.iter=FALSE,na.rm=TRUE)
+    ans <- ans$overall + ans$col
+  }
+  return(ans)
+}
+
+myMedian <- function(x) {
+  if (class(x)=='numeric') {
+    ans <- x
+  } else {
+    ans <- apply(x,2,function(x) median(x,na.rm=TRUE))
+  }
+  return(ans)
+}
+
+plotcor <- function(x,col=1,pch='.',diagonal=FALSE,lowess=TRUE,alpha=0.05,method='pearson',...) {
+  mycex <- 10/ncol(x)
+  plotwithlines <- function(x,y,col,...) {
+    if (missing(col)) { d <- dnorm(x)*dnorm(y); col <- gray(d/max(d)) }
+    points(x,y,col=col,...)
+    if (diagonal) abline(0,1,col=2)
+    if(lowess) if(sum(!is.na(x) & !is.na(y))>0) lines(lowess(x[!is.na(x) & !is.na(y)],y[!is.na(x) & !is.na(y)]),col=2)
+  }
+  panel.cor <- function(x, y, digits=2, prefix="",cex=mycex,col,...)    {
+    usr <- par("usr"); on.exit(par(usr))
+    par(usr = c(0, 1, 0, 1))
+    val <- try(r <- cor.test(x, y,method=method),silent=TRUE)
+    if (inherits(val, "try-error")) {
+      txt <- ''
+    } else {
+      txt <- format(c(r$estimate, 0.123456789), digits=digits)[1]
+      if (r$p.value<alpha) txt <- paste(txt,'*')
+    }
+    txt <- paste(prefix, txt, sep="")
+    text(0.5, 0.5, txt, cex = mycex)
+  }
+  pairs(x,panel=plotwithlines,lower.panel=panel.cor,pch=pch,col=col,cex=mycex,cex.labels=mycex/2,...)
+}
+
+getTimeEstimation <- function(x,dataPath,functionsPath,figuresPath,B=100) {
+#  x: the expressionSet for which we want to estimate times (our data).
+#  dataPath: path to data that will be used to estimate timepoints (from Bozdech et al)
+#  functionsPath: path to the script containing the functions from Lemieux's paper.
+#  figuresPath: where we want to save the output plots.
+  source(functionsPath)
+#  z <- read.csv(dataPath, as.is = T,sep='\t')
+  z <- read.csv(dataPath, as.is = T)
+#  colnames(z)[1] <- 'Name'
+#  oldTime <- as.numeric(as.character(pData(x)$time))
+  oldTime <- as.numeric(substr(sampleNames(xgene),nchar(sampleNames(xgene))-1,nchar(sampleNames(xgene))))
+  x <- exprs(x)
+  x <- data.frame(Name=as.character(rownames(x)),x,stringsAsFactors=FALSE); rownames(x) <- NULL
+  data <- sync_data(x, z)
+  x <- data[[1]]
+  z <- data[[2]]
+  x <- ordinal(x, use.name = T)
+  z <- ordinal(z, use.name = T)
+#  z.na <- cbind(z[,1:22], rep(NA, nrow(z)), z[,23:27], rep(NA, nrow(z)), z[,28:56])
+  z.na <- cbind(z[,1:22], rep(NA, nrow(z)), z[,23:27], rep(NA, nrow(z)), z[,28:46])  
+  z <- t(apply(z.na, 1, smooth.missing))
+  sigma.epsilon <- 789.9056
+  z.smooth <- smooth.ref(z, method = "spline", spar = 0.5)
+  z.smooth.hourly <- z.smooth[,ll.par$hourly]
+#  sigma.eta <- mean(sd(z[,11:ncol(z)] - z.smooth.hourly, na.rm = T), na.rm=T)
+  sigma.eta <- mean(sd(z - z.smooth.hourly, na.rm = T), na.rm=T)  
+  new.sigma <- sqrt(sigma.eta^2 + sigma.epsilon^2)
+  ll <- compute.ll(x = x, z = z.smooth, sigma = new.sigma, bootstrap = T, B = B, sample.rate = 0.50)
+  myTimes <- mle(ll)
+  png(file.path(figuresPath,'defaultPlots1.png'))
+  plot.ll(ll)
+  dev.off()
+  png(file.path(figuresPath,'defaultPlots2.png'))
+  plot.mle(ll)
+  dev.off()
+  png(file.path(figuresPath,'ownPlots1.png'))
+  plot(density(myTimes),main='Estimated times density')
+  dev.off()
+  png(file.path(figuresPath,'ownPlots2.png'))
+  plot(oldTime, as.numeric(myTimes),xlab='Old times',ylab='Estimated times',xlim=c(-5,50),ylim=c(-5,50))
+  abline(0,1,col=2,lwd=2)
+  abline(v=oldTime,lwd=0.5,lty=3)
+  dev.off()
+  return(myTimes)
+}
+#\end{rbatch}
+
+
+###########################################################################
+# 1. NORMALIZATION AND QC
+###########################################################################
+
+sampleinfo <- as.character(read.table(paste(dir,'/sampleinfo.txt',sep=''),sep='\t')[,1])
+xraw <- vector("list",length(sampleinfo))
+for (i in 1:length(xraw)) xraw[[i]] <- read.table(file.path(dir,sampleinfo[i]),skip=28,header=TRUE,check.names=FALSE)
+for (i in 1:length(xraw)) xraw[[i]] <- xraw[[i]][,c('Name','ID','F635 Median','B635 Median','F532 Median','B532 Median','Flags')]
+for (i in 1:length(xraw)) colnames(xraw[[i]]) <- make.names(colnames(xraw[[i]]))
+
+#Remove probes with names starting by bDd2, bHb3, EMPTY, NULL, BLANK
+#Now I need to also remove new probes starting IT.
+#Now "name" of bDd2 or bHB3 does not have the "b" (has changed): need to replace Name for ID, or bHB3 and bDd2 by HB3 and Dd2. I do the first. 
+for (i in 1:length(xraw)) {
+    notsel <- grep('^bDd2',xraw[[i]]$ID)
+    notsel <- (1:nrow(xraw[[i]])) %in% notsel
+    xraw[[i]] <- xraw[[i]][!notsel,]
+    notsel <- grep('^bHb3',xraw[[i]]$ID)
+    notsel <- (1:nrow(xraw[[i]])) %in% notsel
+    xraw[[i]] <- xraw[[i]][!notsel,] 
+    notsel <- grep('^IT',xraw[[i]]$ID)
+    notsel <- (1:nrow(xraw[[i]])) %in% notsel
+    xraw[[i]] <- xraw[[i]][!notsel,] 
+    notsel <- grep('^bHB3',xraw[[i]]$ID)
+    notsel <- (1:nrow(xraw[[i]])) %in% notsel
+    xraw[[i]] <- xraw[[i]][!notsel,]
+  notsel <- unique(c(grep('^EMPTY',xraw[[i]]$Name),grep('^EMPTY',xraw[[i]]$ID)))
+  notsel <- (1:nrow(xraw[[i]])) %in% notsel
+  xraw[[i]] <- xraw[[i]][!notsel,]
+  notsel <- grep('^NULL',xraw[[i]]$Name)
+  notsel <- (1:nrow(xraw[[i]])) %in% notsel
+  xraw[[i]] <- xraw[[i]][!notsel,]
+  notsel <- grep('^BLANK',xraw[[i]]$Name)
+  notsel <- (1:nrow(xraw[[i]])) %in% notsel
+  xraw[[i]] <- xraw[[i]][!notsel,]
+}
+
+
+for (i in 1:length(xraw)) rownames(xraw[[i]]) <- as.character(xraw[[i]]$ID)
+#save boxplot before any normalization
+pdf(file.path(figuresPath,'boxplot_beforeNormalization.pdf'))
+boxplot.rawData(xraw)
+dev.off()
+
+#Compute background for each chip
+medBackground532 <- mfore532 <- mback532 <- medBackground635 <- mfore635 <- mback635 <- double(length(xraw))
+lowIntensity <- vector("list",length(xraw))
+for (i in 1:length(xraw)) {
+  mfore635[i] <- median(c(xraw[[i]]$F635[order(xraw[[i]]$F635)][1:100]))
+  mback635[i] <- median(c(xraw[[i]]$B635))
+  mfore532[i] <- median(c(xraw[[i]]$F532[order(xraw[[i]]$F532)][1:100]))
+  mback532[i] <- median(c(xraw[[i]]$B532))
+  medBackground532[i] <- min(mfore532[[i]],mback532[[i]])
+  medBackground635[i] <- min(mfore635[[i]],mback635[[i]])
+  lowIntensity[[i]] <- rownames(xraw[[i]])[(xraw[[i]]$F635 < 1.5*medBackground635[i]) & (xraw[[i]]$F532 < 1.5*medBackground532[i])]
+}
+
+#rename genes from some oligos. This genes have been selected after blasting the oligo's sequence. Gene description is also modified according to gene description grom the 7.0 version of the genome.
+oligos2ren <- read.csv(genesToRename.blast)
+colnames(oligos2ren)[2] <- 'geneID'
+rownames(oligos2ren) <- oligos2ren$OligoID
+
+desc <- read.csv(geneDescription,sep='\t',header=FALSE,stringsAsFactors=FALSE)
+desc[,1] <- gsub(' ','',desc[,1])
+colnames(desc) <- c('geneID','description')
+rownames(desc) <- desc[,1]
+
+renameGenesDesc <- function(x) {
+  geneID <- as.character(unlist(lapply(strsplit(as.character(x$Name),'::'),function(x) x[1])))
+  x <- data.frame(geneID=as.character(geneID),x,stringsAsFactors = FALSE)
+  sel <- as.character(oligos2ren$OligoID)
+  sel <- sel[sel %in% rownames(x)]
+  x[sel,'geneID'] <- as.character(oligos2ren[sel,'geneID'])
+  #add description from genome version 7.0
+  x$Name <- ifelse(desc[x$geneID,'description']=="  ",NA,paste(desc[x$geneID,1],desc[x$geneID,2],sep='::'))
+  return(x)
+}
+xraw <- lapply(xraw,renameGenesDesc)
+
+#save raw data
+save(xraw,file=file.path(figuresPath,'xraw.RData'))
+
+#Identify flagged genes in each chip
+flagged <- vector("list",length(xraw)); names(flagged) <- gsub('.gpr','',sampleinfo)
+for (i in 1:length(xraw)) flagged[[i]] <- rownames(xraw[[i]][xraw[[i]]$Flags!=0,])
+save(flagged,file=file.path(figuresPath,'flagged.RData'))
+
+#Substract background
+medBackground635 <- round(medBackground635,0)
+medBackground532 <- round(medBackground532,0)
+xadj <- vector("list",length(xraw))
+for (i in 1:length(xraw)) {
+  xraw[[i]]$F635 <- ifelse(xraw[[i]]$F635 < (1.5 * medBackground635[i]), medBackground635[i]/2, xraw[[i]]$F635 - medBackground635[i])
+  xraw[[i]]$F532 <- ifelse(xraw[[i]]$F532 < (1.5 * medBackground532[i]), medBackground532[i]/2, xraw[[i]]$F532 - medBackground532[i])
+  xadj[[i]] <- xraw[[i]][,c('ID','geneID','Name','F635','F532')]
+}
+
+#MA normalization USING LOESS
+pdf(file.path(figuresPath,'/MAplots.pdf'))
+for (i in 1:length(xadj)) {
+  xadj[[i]][xadj[[i]][,'F635']<=1,'F635'] <- 0.001
+  xadj[[i]][xadj[[i]][,'F532']<=1,'F532'] <- 0.001
+  m <- log2(xadj[[i]]$F635) - log2(xadj[[i]]$F532)
+  a <- log2(xadj[[i]]$F635) + log2(xadj[[i]]$F532)
+  fit <- loess(m~a,span=0.4)
+  xadj[[i]]$m <- m-predict(fit,a)
+  plot(a,m,pch='.',main=sampleinfo[i]); lines(a[order(a)],fit$fitted[order(a)],col=4)
+  plot(a,xadj[[i]]$m,pch='.',ylab='m'); abline(h=0,lty=2,col=2)
+}
+dev.off()
+
+#Merge data into a single object
+xall <- merge(xadj[[1]][,-4:-5],xadj[[2]][,-2:-5],by='ID',all=TRUE)
+for (i in 3:length(xadj)) xall <- merge(xall,xadj[[i]][,-2:-5],by='ID',all=TRUE)
+rownames(xall) <- as.character(xall[,1])
+#4 noRatio
+xall.noRatio <- merge(xadj[[1]][,-6],xadj[[2]][,c(-2,-3,-6)],by='ID',all=TRUE)  
+for (i in 3:length(xadj)) xall.noRatio <- merge(xall.noRatio,xadj[[i]][,c(-2,-3,-6)],by='ID',all=TRUE)
+rownames(xall.noRatio) <- as.character(xall[,1])
+
+#save noRatio before normalization. It will be used in Parental
+n <- gsub('.gpr','',sampleinfo)
+xall.noRatio.f635 <- xall.noRatio[,c(1:3,seq(4,ncol(xall.noRatio),2))]
+colnames(xall.noRatio.f635) <- c('ID','geneID','Name',n)
+save(xall.noRatio.f635,file=file.path(figuresPath,'noRatio_before_normalization.RData'))
+
+#quantile normalization for noRatio (one quantNorm for each time point) (only F635 samples were normalized)
+mytime <- factor(substr(n,nchar(n)-1,nchar(n)))
+colnames(xall.noRatio) <- c('ID','geneID','Name',as.character(rbind(paste(n,'F635',sep='.'),paste(n,'F532',sep='.'))))
+pdf(file.path(figuresPath,'boxplot_noRatio.pdf'))
+tmp <- xall.noRatio[,-1:-3]
+boxplot(log2(tmp),col=ifelse(substr(colnames(tmp),nchar(colnames(tmp))-3,nchar(colnames(tmp)))=='F635','grey','red'),las=2,cex.axis=0.5,main='No ratio before normalization',sub='grey boxes are F635 and red boxes are F532')
+tmp <- xall.noRatio[,seq(4,ncol(xall.noRatio),2)]
+boxplot(log2(tmp),col='grey',las=2,cex.axis=0.75,main='No ratio before normalization')
+avgTime <- matrix(nrow=nrow(tmp),ncol=length(levels(mytime))); colnames(avgTime) <- levels(mytime); rownames(avgTime) <- rownames(tmp)
+for (i in 1:ncol(avgTime)) avgTime[,i] <- rowMeans(tmp[,mytime==levels(mytime)[i]])
+tmp.norm <- vector('list',ncol(avgTime))
+for (i in 1:ncol(avgTime)) tmp.norm[[i]] <- normalizeQuantiles(cbind(avgTime[,colnames(avgTime)==levels(mytime)[i]],tmp[,mytime==levels(mytime)[i]]))[,-1]
+out <- do.call(cbind,tmp.norm)
+boxplot(log2(out),col='grey',las=2,cex.axis=0.75,main='No ratio after normalization (ordered by time)')
+out <- out[,order(colnames(out))]
+boxplot(log2(out),col='grey',las=2,cex.axis=0.75,main='No ratio after normalization (ordered by soque)')
+sel <- colnames(xall.noRatio) %in% colnames(out)
+xall.noRatio[,sel] <- out[,match(colnames(xall.noRatio[,sel]), colnames(out))]
+dev.off()
+
+#Set to NA flagged and low intensity genes
+for (i in 4:ncol(xall)) {
+  sel <- rownames(xall) %in% c(lowIntensity[[i-3]],flagged[[i-3]])
+  xall[sel,i] <- NA
+}
+#4 noRatio (Set to NA flagged genes but NOT low intensity)
+for (i in 1:(ceiling(ncol(xall.noRatio[,-1:-3])/2))) {
+# sel <- rownames(xall.noRatio) %in% c(flagged[[i-1]])
+ sel <- rownames(xall.noRatio) %in% c(flagged[[i]])  
+ xall.noRatio[sel,3 + c((i*2)-1,i*2)] <- NA
+}
+
+#Save to txt & ExpressionSet
+colnames(xall) <- c('ID','geneID','Name',sampleinfo)
+if (soqueName=='hb3') {  #begin code for hb3
+  hb3.annot <- read.csv(annot.hb3,stringsAsFactors=FALSE)
+  sel <- match(xall$ID, hb3.annot$Oligo)
+  xall[!is.na(sel),c('Name','geneID')] <- hb3.annot[sel[!is.na(sel)],c('Gene.Name.','Gene.Name.')]
+  sel <- match(xall$geneID, hb3.annot$Gene.Name.)
+  xall[!is.na(sel),'Name'] <- hb3.annot[sel[!is.na(sel)],'Gene.Name.']
+}
+write.csv(xall,file.path(figuresPath,'normalizedData_probeLevel.csv'),row.names=FALSE)
+
+#Here (and again later) the name of each array is used to extract info on parasite line (soca) and time point (time).
+
+fdata <- new("AnnotatedDataFrame",xall[,1:3])
+n <- gsub('.gpr','',names(xall)[-1:-3])
+time <- factor(substring(n,nchar(n)-1,nchar(n)))    #PROBLEM (here and again later) with time 8, only one character, compared with two characters for all others???? Will see.
+soca <- substring(n,1,nchar(n)-3)
+soca <- factor(soca)
+pdata <- data.frame(soca=soca,time=time); rownames(pdata) <- gsub('W41','w41',n)
+pdata <- new("AnnotatedDataFrame",pdata)
+exprsx <- as.matrix(xall[,-1:-3]); colnames(exprsx) <- gsub('W41','w41',n)
+x <- new("ExpressionSet",exprs=exprsx,featureData=fdata,phenoData=pdata)
+save(x,file=file.path(figuresPath,'normalizedData_probeLevel.RData'))
+
+#Save to txt & ExpressionSet (noRatio)
+colnames(xall.noRatio) <- c('ID','geneID','Name',as.character(rbind(paste(sampleinfo,'F635',sep='.'),paste(sampleinfo,'F532',sep='.'))))
+colnames(xall.noRatio) <- gsub('.gpr','',colnames(xall.noRatio))
+write.csv(xall.noRatio,file.path(figuresPath,'normalizedData_probeLevel_noRatio.csv'),row.names=FALSE)
+
+#Again as before, here the name of each array is used to extract info on parasite line (soca) and time point (time).
+xall.635.532 <- xall.noRatio
+xall.noRatio <- xall.noRatio[,c(1:3,(2:((ncol(xall.noRatio)-1)/2)*2))]
+fdata <- new("AnnotatedDataFrame",xall.noRatio[,1:3])
+n <- gsub('.F635','',colnames(xall.noRatio)[-1:-3])
+colnames(xall.noRatio)[-1:-3] <- n
+time <- factor(substring(n,nchar(n)-1,nchar(n)))  #As before, PROBLEM with time 8, only one character, compared with two characters for all others???? Will see.
+soca <- substring(n,1,nchar(n)-3)
+soca <- factor(soca)
+pdata <- data.frame(soca=soca,time=time); rownames(pdata) <- gsub('W41','w41',n)
+pdata <- new("AnnotatedDataFrame",pdata)
+exprsx <- as.matrix(xall.noRatio[,-1:-3]); colnames(exprsx) <- gsub('W41','w41',n)
+x.noRatio <- new("ExpressionSet",exprs=exprsx,featureData=fdata,phenoData=pdata)
+save(x.noRatio,file=file.path(figuresPath,'normalizedData_probeLevel_noRatio.RData'))
+
+#boxplot after normalization
+pdf(file.path(figuresPath,'boxplot_afterNormalization.pdf'))
+boxplot(exprs(x))
+dev.off()
+
+#remove probes with blast score of second alignment too high (cross-reactive)
+oligo.bad <- read.csv(oligoBadPath,header=TRUE)
+oligo.bad <- as.character(oligo.bad[,'OligoID'])
+xall <- xall[!(xall$ID %in% oligo.bad),]
+xall.noRatio <- xall.noRatio[!(xall.noRatio$ID %in% oligo.bad),]
+
+#remove oligos from genes that have been removed from the genome. This genes have been selected after blasting the oligo's sequence.
+oligos2del <- scan(file=genesToRemove,'character',quote='\n')
+xall <- xall[!(xall$ID %in% oligos2del),]
+xall.noRatio <- xall.noRatio[!(xall.noRatio$ID %in% oligos2del),]
+
+#Summarize probeset to genes
+geneid <- strsplit(xall[,2],'::')
+geneid <- sapply(geneid,function(x) x[[1]])
+#4 noRatio
+geneid.noRatio <- strsplit(xall.noRatio[,2],'::')
+geneid.noRatio <- sapply(geneid.noRatio,function(x) x[[1]])
+
+#rename genes of some probes. Alfred provided the file with the new names.
+#Those were genes for which different probes showed different patterns. In the final variantome analysis we did not use this list to separate probes within a gene with different patterns.
+#GenesToRename.sd set to NA to avoid renaming these genes, but can not delete the lines because some info for next steps is here.
+renameGenesAndSummarize <- function(genesToRename.sd,exprsx,geneid,summaryMethod=myRma) {
+if (!is.na(genesToRename.sd)) {
+    convTable <- read.csv(genesToRename.sd,header=TRUE)
+    myBadOligos <- featureNames(x)[featureNames(x) %in% convTable$OligoID]
+    for (i in 1:length(myBadOligos)) myBadOligos[i] <- as.character(convTable[convTable$OligoID==myBadOligos[i],'NewGeneID.'])
+    geneid[featureNames(x) %in% convTable$OligoID] <- myBadOligos
+  }
+
+  xgene <- by(exprsx[,-1:-3],geneid,summaryMethod) 
+  xgene <- do.call('rbind',xgene)
+
+  mysd <- function(x) { ans <- ifelse(sum(!is.na(x))==1,0,sd(x,na.rm=TRUE)); return(ans) }
+  sdgene <- aggregate(exprsx[,-1:-3],by=list(geneid),FUN=mysd)
+
+  names(sdgene)[1] <- 'geneid'
+  colnames(xgene) <- names(sdgene)[-1] <- sub('.gpr','',colnames(xgene))
+  xgene <- data.frame(geneid=rownames(xgene),xgene); rownames(xgene) <- NULL
+
+  fdata <- by(exprsx[,2:3],geneid,unique)
+  genenames <- names(fdata)
+  fdata <- do.call('rbind',fdata)
+  rownames(fdata) <- genenames
+  if (soqueName=='hb3') fdata[,1] <- genenames else fdata[,'geneID'] <- genenames
+  fdata <- new("AnnotatedDataFrame",data.frame(fdata))
+  exprsxgene <- as.matrix(xgene[,-1])
+  rownames(exprsxgene) <- as.character(xgene$geneid); colnames(exprsxgene) <- gsub('\\.',',',gsub('X','',gsub('W41','w41',colnames(exprsxgene))))
+  eset <- new("ExpressionSet",exprs=exprsxgene,featureData=fdata,phenoData=pdata)
+  return(list(eset=eset,sdgene=sdgene,fdata=fdata,geneid=geneid))
+}
+
+tmp <- renameGenesAndSummarize(genesToRename.sd=genesToRename.sd,exprsx=xall,geneid=geneid,summaryMethod=myRma)
+xgene <- tmp[['eset']]; sdgene <- tmp[['sdgene']]; fdata <- tmp[['fdata']]; geneid <- tmp[['geneid']]
+write.csv(data.frame(probe=xall[,1],gene=geneid),file.path(figuresPath,'geneProbes.csv'),row.names=FALSE) #probes of each gene
+tmp.noRatio <- renameGenesAndSummarize(genesToRename.sd=genesToRename.sd,exprsx=xall.noRatio,geneid=geneid.noRatio,summaryMethod=myMedian)
+xgene.noRatio <- tmp.noRatio[['eset']]; sdgene.noRatio <- tmp.noRatio[['sdgene']]; fdata.noRatio <- tmp.noRatio[['fdata']]; geneid.noRatio <- tmp.noRatio[['geneid']]
+
+#Get estimated timings using lemieux's method
+if (!file.exists(file.path(figuresPath,'timeAdjusting/'))) dir.create(file.path(figuresPath,'timeAdjusting/'))
+estimatedTimes <- getTimeEstimation(xgene,bozdechPath,LemieuxFunctionsPath,file.path(figuresPath,'timeAdjusting/'),B=100)
+save(estimatedTimes,file=file.path(figuresPath,'estimatedTimes.RData'))
+load(file.path(figuresPath,'estimatedTimes.RData'))
+pData(xgene)$time <- estimatedTimes
+write.csv(estimatedTimes,file.path(figuresPath,'Estimated_Times.csv'))
+
+#save ExpressionSet at gene level
+save(xgene,file=file.path(figuresPath,'normalizedData_geneLevel.RData'))
+save(xgene.noRatio,file=file.path(figuresPath,'normalizedData_geneLevel_noRatio.RData'))
+
+#boxplot after summarization
+pdf(file.path(figuresPath,'boxplot_afterSummarization.pdf'))
+boxplot(exprs(xgene),main='summarization method: median poslish')
+dev.off()
+#4 noRatio
+pdf(file.path(figuresPath,'boxplot_afterSummarization_noRatio.pdf'))
+boxplot(log2(exprs(xgene.noRatio)),main='summarization method: median polish')
+dev.off()
+
+#sd
+exprsx <- as.matrix(sdgene[,-1])
+rownames(exprsx) <- as.character(sdgene$geneid)
+colnames(exprsx) <- sampleNames(xgene)
+sdgene <- new("ExpressionSet",exprs=exprsx,featureData=fdata,phenoData=pdata)
+save(sdgene,file=file.path(figuresPath,'normalizedData_SDgeneLevel.RData'))
+xout <- data.frame(fData(xgene),exprs(xgene))
+write.csv(xout,file.path(figuresPath,'normalizedData_geneLevel.csv'),row.names=FALSE)
+xout <- data.frame(fData(sdgene),exprs(sdgene))
+write.csv(xout,file.path(figuresPath,'normalizedData_SDgeneLevel.csv'),row.names=FALSE)
+#4 noRatio
+exprsx.noRatio <- as.matrix(sdgene.noRatio[,-1])
+rownames(exprsx.noRatio) <- as.character(sdgene.noRatio$geneid)
+colnames(exprsx.noRatio) <- sampleNames(xgene.noRatio)
+sdgene.noRatio <- new("ExpressionSet",exprs=exprsx.noRatio,featureData=fdata.noRatio,phenoData=pdata)
+save(sdgene.noRatio,file=file.path(figuresPath,'normalizedData_SDgeneLevel_noRatio.RData'))
+xall.635 <- exprs(xgene.noRatio); colnames(xall.635) <- paste(colnames(xall.635),'.F635',sep='')
+xall.532 <- xall.635.532[,grep('532',colnames(xall.635.532))]
+xall.532 <- xall.532[rownames(xall.532) %in% rownames(xall),] #remove the ones we removed on 635
+xall.532 <- by(xall.532,geneid.noRatio,myRma) 
+xall.532 <- do.call('rbind',xall.532)
+xout <- data.frame(fData(xgene.noRatio),xall.635,xall.532)
+write.csv(xout,file.path(figuresPath,'normalizedData_geneLevel_noRatio.csv'),row.names=FALSE)
+xout <- data.frame(fData(sdgene.noRatio),exprs(sdgene.noRatio))
+write.csv(xout,file.path(figuresPath,'normalizedData_SDgeneLevel_noRatio.csv'),row.names=FALSE)
+
+#PCA (probe level)
+load(file.path(figuresPath,'normalizedData_probeLevel.RData'))
+xnm <- x[rowSums(is.na(exprs(x)))==0,]
+pcdat <- prcomp(t(exprs(xnm)),na.action=na.pass)
+n <- sub('\\.gpr','',rownames(pData(x)))
+g <- as.numeric(factor(substring(n,nchar(n)-1,nchar(n))))
+
+pdf(file.path(figuresPath,'pca_probeLevel.pdf'))
+xlim <- 1.5*range(pcdat$x[,1]); ylim <- 1.25*range(pcdat$x[,2])
+plot(pcdat$x[,1],pcdat$x[,2],col=g,xlab='PC1',ylab='PC2',xlim=xlim,ylim=ylim)
+text(pcdat$x[,1],pcdat$x[,2],n,pos=1,cex=.8)
+dev.off()
+
+#PCA (gene level)
+load(file.path(figuresPath,'normalizedData_geneLevel.RData'))
+x <- xgene
+xnm <- xgene[rowSums(is.na(exprs(xgene)))==0,]
+pcdat <- prcomp(t(exprs(xnm)))
+n <- sub('\\.gpr','',rownames(pData(x)))
+g <- as.numeric(factor(substring(n,nchar(n)-1,nchar(n))))
+
+pdf(file.path(figuresPath,'pca_geneLevel.pdf'))
+xlim <- 1.5*range(pcdat$x[,1]); ylim <- 1.25*range(pcdat$x[,2])
+plot(pcdat$x[,1],pcdat$x[,2],col=g,xlab='PC1',ylab='PC2',xlim=xlim,ylim=ylim)
+text(pcdat$x[,1],pcdat$x[,2],n,pos=1,cex=.8)
+dev.off()
+
+
+
+###########################################################################
+# 2. PLOT GENES OF noRatio
+###########################################################################
+
+# 2.1 AT GENE LEVEL 
+####################
+
+#\begin{rbatch}
+load(file.path(figuresPath,'normalizedData_geneLevel_noRatio.RData'))
+load(file.path(figuresPath,'normalizedData_geneLevel.RData'))
+xgene.noRatio <- xgene.noRatio[,order(pData(xgene.noRatio)$soca,pData(xgene.noRatio)$time)]
+exprs(xgene.noRatio) <- log2(exprs(xgene.noRatio))
+
+time <- pData(xgene)[sampleNames(xgene.noRatio),'time']
+time.old <- as.numeric(levels(pData(xgene.noRatio)$time))
+soques <- levels(pData(xgene.noRatio)$soca)
+ylim <- range(exprs(xgene.noRatio)[!is.na(exprs(xgene.noRatio))])
+if (!file.exists(file.path(figuresPath,'soques_genelevel_noRatio/'))) dir.create(file.path(figuresPath,'soques_genelevel_noRatio/'))
+outDir <- file.path(figuresPath,'soques_genelevel_noRatio/')
+
+myRange <- range(time)
+myPoints.y <- round(seq(range(ylim)[1],range(ylim)[2],1))
+myPoints.x <- round(seq(myRange[1],ceiling(myRange[2]),2))
+for (i in 1:nrow(xgene.noRatio)) {
+#for (i in 1000:1050) {  
+#(To do just a few graphics for a test, do not use the two lines, in the line above replace nrow... by 50).
+  cat(paste(i,'\n'))
+  fileName <- paste(outDir,gsub('/','',gsub(':','#',featureNames(xgene.noRatio)[i])),'.png',sep='') #colon is not supported under windows
+  png(fileName)
+  plot.new()
+  par(las=2)
+  plot.window(xlim=myRange,ylim=ylim)
+  axis(2,at=myPoints.y)
+  axis(1,at=myPoints.x)
+  title(featureNames(xgene.noRatio)[i],ylab='Log F635',xlab='Time')
+  for (j in 1:length(soques)) {
+    plotMe <- exprs(xgene.noRatio[i,which(pData(xgene.noRatio[i,])$soca==soques[j])])
+    lines(time[pData(xgene.noRatio[i,])$soca==soques[j]][!is.na(plotMe)], plotMe[!is.na(plotMe)],col=j,pch=15)
+    points(time[pData(xgene.noRatio[i,])$soca==soques[j]][!is.na(plotMe)], plotMe[!is.na(plotMe)],pch=15,col=j)
+  }
+  legend(ifelse(sum(is.na(exprs(xgene.noRatio[i,which(pData(xgene.noRatio[i,])$time==40)])))==length(soques) | mean(exprs(xgene.noRatio[i,which(pData(xgene.noRatio[i,])$time==40)]),na.rm=TRUE)<mean(ylim),"topright","bottomright"),soques,pch=15,col=1:length(soques),lty=1)
+  #In variantome analysis oldtime was ==43, now I change to 40, the latest time in this series.
+  dev.off()
+}
+
+#\end{rbatch}
+
+
+# 2.2 AT PROBE LEVEL 
+#####################
+
+load(file.path(figuresPath,'normalizedData_probeLevel_noRatio.RData'))
+x.noRatio <- x.noRatio[,order(pData(x.noRatio)$soca,pData(x.noRatio)$time)]
+exprs(x.noRatio) <- log2(exprs(x.noRatio))
+
+time <- as.numeric(levels(pData(x.noRatio)$time))
+soques <- levels(pData(x.noRatio)$soca)
+ylim <- range(exprs(x.noRatio)[!is.na(exprs(x.noRatio))])
+if (!file.exists(file.path(figuresPath,'soques_probelevel_noRatio/'))) dir.create(file.path(figuresPath,'soques_probelevel_noRatio/'))
+outDir <- file.path(figuresPath,'soques_probelevel_noRatio/')
+
+myRange <- range(time)
+myPoints <- round(seq(range(ylim)[1],range(ylim)[2],1))
+for (i in 1:nrow(x.noRatio)) {
+  fileName <- paste(outDir,gsub('/','',gsub(':','#',featureNames(x.noRatio)[i])),'.png',sep='') #colon is not supported under windows
+  png(fileName)
+  cat(paste(i,'\n'))
+  plot.new()
+  par(las=2)
+  plot.window(xlim=myRange,ylim=ylim)
+  axis(2)
+  axis(1,at=time,lab=as.character(time))
+  title(featureNames(x.noRatio)[i],ylab='Log F635',xlab='Time')
+  for (j in 1:length(soques)) {
+    plotMe <- exprs(x.noRatio[i,which(pData(x.noRatio[i,])$soca==soques[j])])
+    lines(time[!is.na(plotMe)], plotMe[!is.na(plotMe)],col=j,pch=15)
+    points(time[!is.na(plotMe)], plotMe[!is.na(plotMe)],pch=15,col=j)
+  }
+  legend(ifelse(sum(is.na(exprs(x.noRatio[i,which(pData(x.noRatio[i,])$time==40)])))==length(soques) | mean(exprs(x.noRatio[i,which(pData(x.noRatio[i,])$time==40)]),na.rm=TRUE)<mean(ylim),"topright","bottomright"),soques,pch=15,col=1:length(soques),lty=1)
+  #In variantome analysis oldtime was ==43, now I change to 40, the latest time in this series.
+  dev.off()
+}
+
+
+#########################################################
+# 4. PLOT GENES AT PROBE LEVEL (WITHOUT TIME ESTIMATION)
+#########################################################
+
+load(file.path(figuresPath,'normalizedData_probeLevel.RData'))
+x <- x[,order(pData(x)$soca,pData(x)$time)]
+
+time <- as.numeric(levels(pData(x)$time))
+soques <- levels(pData(x)$soca)
+ylim <- range(exprs(x)[!is.na(exprs(x))])
+if (!file.exists(file.path(figuresPath,'soques_probelevel/'))) dir.create(file.path(figuresPath,'soques_probelevel/'))
+outDir <- file.path(figuresPath,'soques_probelevel/')
+
+myRange <- range(time)
+myPoints.y <- round(seq(range(ylim)[1],range(ylim)[2],1))
+for (i in 1:nrow(x)) {
+  fileName <- paste(outDir,gsub('/','',gsub(':','#',featureNames(x)[i])),'.png',sep='') #colon is not supported under windows
+  png(fileName)
+  cat(paste(i,'\n'))
+  plot.new()
+  par(las=2)
+  plot.window(xlim=myRange,ylim=ylim)
+  axis(2,at=myPoints.y)
+  axis(1,at=time,lab=as.character(time))
+  title(featureNames(x)[i],xlab='Time',ylab='Log ratio')
+  for (j in 1:length(soques)) {
+    plotMe <- exprs(x[i,which(pData(x[i,])$soca==soques[j])])
+    lines(time[!is.na(plotMe)], plotMe[!is.na(plotMe)],col=j,pch=15)
+    points(time[!is.na(plotMe)], plotMe[!is.na(plotMe)],pch=15,col=j)
+  }
+  legend(ifelse(sum(is.na(exprs(x[i,which(pData(x[i,])$time==40)])))==length(soques) | mean(exprs(x[i,which(pData(x[i,])$time==40)]),na.rm=TRUE)<mean(ylim),"topright","bottomright"),soques,pch=15,col=1:length(soques),lty=1)
+  #In variantome analysis oldtime was ==43, now I change to 40, the latest time in this series.
+  dev.off()
+}
+
+
+###########################################################################
+# 5. POINT ESTIMATIONS
+###########################################################################
+
+# 5.1 COMPUTE ESTIMATIONS
+##########################
+
+load(file.path(figuresPath,'normalizedData_geneLevel.RData'))
+
+exprsx <- exprs(xgene)
+soca <- as.factor(pData(xgene)$soca)
+oldTime <- as.factor(unlist(lapply(strsplit(colnames(exprsx),','),function(x) x[length(x)])))
+
+for (i in 1:nrow(exprsx)) {
+  cat(paste(i,'\n'))
+  y <- as.numeric(exprsx[i,])
+  if (sum(is.na(y))>0) {
+    soca2correct <- tapply(y,soca,function(x) sum(!is.na(x))>3) # Was ">4", to estimate when more than 4 points, I change to ">3" (to estimate when 4 not NA and 1 missing).
+    oldTime2correct <- tapply(y,oldTime,function(x) sum(is.na(x))!=length(x))
+    if (sum(soca2correct)>1) { #stop if we do not have soques with at least 5 not NA (now 4).
+      soca2correct <- names(soca2correct[soca2correct])
+      oldTime2correct <- names(oldTime2correct[oldTime2correct])
+      sel <- soca %in% soca2correct & oldTime %in% oldTime2correct
+      if (sum(sel)>0) { #do not select times that are NA on all soques
+#        cat('in','\n')
+        myDat <- data.frame(y=y,soca=soca,oldTime=oldTime)
+        lm1 <- lm(y ~ soca + oldTime, data=myDat)
+        soca2pred <- as.character(soca[sel][is.na(y[sel])])
+        oldTime2pred <- as.character(oldTime[sel][is.na(y[sel])])
+        y[sel][is.na(y[sel])] <- predict(lm1,newdata=data.frame(soca=soca2pred,oldTime=oldTime2pred))
+        exprsx[i,] <- y
+      }
+    }
+  }
+}
+
+estim <- is.na(exprs(xgene)) & !is.na(exprsx)
+exprs(xgene) <- exprsx
+save(xgene,estim,file=file.path(figuresPath,'xgene_estimated.RData'))
+
+
+ # 5.2 MAKE PLOTS WITH ESTIMATIONS AT GENE LEVEL 
+ ################################################
+
+ load(file.path(figuresPath,'xgene_estimated.RData'))
+ myOrder <- order(pData(xgene)$soca,pData(xgene)$time)
+ xgene <- xgene[,myOrder]
+ estim <- estim[,myOrder]
+
+ time <- pData(xgene)$time
+ soques <- levels(pData(xgene)$soca)
+ ylim <- range(exprs(xgene)[!is.na(exprs(xgene))])
+ if (!file.exists(file.path(figuresPath,'soques_genelevel_estimated/'))) dir.create(file.path(figuresPath,'soques_genelevel_estimated/'))
+ outDir <- file.path(figuresPath,'soques_genelevel_estimated/')
+
+ myRange <- range(time)
+ myPoints.y <- round(seq(range(ylim)[1],range(ylim)[2],1))
+ myPoints.x <- round(seq(myRange[1],ceiling(myRange[2]),2))
+ for (i in 1:nrow(xgene)) {
+ #for (i in 1000:1050) {
+   cat(paste(i,'\n'))
+   fileName <- paste(outDir,gsub('/','',gsub(':','#',featureNames(xgene)[i])),'.png',sep='') #colon is not supported under windows
+   png(fileName)
+   plot.new()
+   par(las=2)
+   plot.window(xlim=myRange,ylim=ylim)
+   axis(2,at=myPoints.y)
+   axis(1,at=myPoints.x)
+   title(paste(featureNames(xgene)[i],ifelse(any(estim[i,]),'(has point estimation(s))','')),ylab='Log ratio',xlab='Time')
+   for (j in 1:length(soques)) {
+     plotMe <- exprs(xgene[i,which(pData(xgene[i,])$soca==soques[j])])
+     lines(time[which(pData(xgene[i,])$soca==soques[j])][!is.na(plotMe)], plotMe[!is.na(plotMe)],col=j,pch=15)
+     myPch <- ifelse(estim[i,which(pData(xgene[i,])$soca==soques[j])],1,15)
+     points(time[which(pData(xgene[i,])$soca==soques[j])][!is.na(plotMe)], plotMe[!is.na(plotMe)],pch=myPch,col=j)
+   }
+   oldTime <- unlist(lapply(strsplit(sampleNames(xgene),','),function(x) x[length(x)]))
+   legend(ifelse(sum(is.na(exprs(xgene[i,which(oldTime==40)])))==length(soques) | mean(exprs(xgene[i,which(oldTime==40)]),na.rm=TRUE)<mean(ylim),"topright","bottomright"),soques,pch=15,col=1:length(soques),lty=1)
+   #In variantome analysis oldtime was ==43, now I change to 40, the latest time in this series.
+   dev.off()
+ }
+
+
+ # 5.3 AREAS
+############
+
+timeCorrectedEpxrs <- function(exprsx,maxMin.time.est,minMax.time.est,time,soque) {
+  selClose <- function(y,x,time.est,pos='before') {
+    myTime <- time.est[soque==y]
+    if (any(myTime==x)) {
+      ans <- rep(FALSE,length(myTime))
+    } else {
+      if (pos=='previous') ans <- myTime==max(myTime[myTime<x]) else ans <- myTime==min(myTime[myTime>x])
+    }
+    return(ans)
+  }
+  getNewVals <- function(x,sel1,sel2) {
+    y1 <- exprsx[,sel1]
+    y2 <- exprsx[,sel2]
+    x1 <- time.est[sel1]
+    x2 <- time.est[sel2]  
+    a <- matrix((x-x1)/(x2-x1))
+    b <- y2-y1
+    c <- t(apply(b,1,function(x) x * a))
+    ans <- c + y1
+    return(ans)
+  }
+  sel1 <- as.logical(sapply(unique(soque),function(y) selClose(y,maxMin.time.est,time.est,'previous')))
+  sel2 <- as.logical(sapply(unique(soque),function(y) selClose(y,maxMin.time.est,time.est,'next')))
+  newValsBefore <- getNewVals(maxMin.time.est,sel1,sel2)  
+  exprsx[,sel1] <- newValsBefore
+  sel1 <- as.logical(sapply(unique(soque),function(y) selClose(y,minMax.time.est,time.est,'previous')))
+  sel2 <- as.logical(sapply(unique(soque),function(y) selClose(y,minMax.time.est,time.est,'next')))
+  newValsAfter <- getNewVals(minMax.time.est,sel1,sel2)  
+  exprsx[,sel2] <- newValsAfter
+  return(exprsx)
+}
+
+getMaxDif <- function(x) {
+  if (sum(!is.na(x))>1) abs(max(x[!is.na(x)])-min(x[!is.na(x)])) else NA
+}
+
+compArea <- function(soqueName,soque,exprsx,time.est,from,to) {
+  if (missing(from) & missing(to)) {
+    sel <- soque == soqueName
+    exprsx <- exprsx[,sel]
+    x <- time.est[sel]
+  } else if (!missing(from) & missing(to)) {
+    uniqueTimesInSoque <- as.logical(sapply(unique(soque),function(x) !duplicated(time.est[soque==x]))) #if we have repeated times use only first
+    sel <- soque == soqueName & time.est>=from & uniqueTimesInSoque
+    prevTime <- c(max(time.est[soque == soqueName & time.est<from]),min(time.est[soque == soqueName & time.est>from]))
+    prevSel <- soque == soqueName & time.est %in% prevTime & uniqueTimesInSoque
+    firstexprs <- apply(exprsx[,prevSel],1,function(x) ifelse(any(is.na(x)),NA,approxfun(x=prevTime,y=x)(from)))
+    exprsx <- cbind(firstexprs,exprsx[,sel])
+    x <- c(from,time.est[sel])
+  } else if (!missing(from) & !missing(to)) {
+    uniqueTimesInSoque <- as.logical(sapply(unique(soque),function(x) !duplicated(time.est[soque==x]))) #if we have repeated times use only first
+    sel <- soque == soqueName & (time.est>=from & time.est<=to) & uniqueTimesInSoque
+    prevTime <- c(max(time.est[soque == soqueName & time.est<from]),min(time.est[soque == soqueName & time.est>from]))
+    prevSel <- soque == soqueName & time.est %in% prevTime & uniqueTimesInSoque
+    nextTime <- c(max(time.est[soque == soqueName & time.est<to]),min(time.est[soque == soqueName & time.est>to]))
+    nextSel <- soque == soqueName & time.est %in% nextTime & uniqueTimesInSoque
+    firstexprs <- apply(exprsx[,prevSel],1,function(x) ifelse(any(is.na(x)),NA,approxfun(x=prevTime,y=x)(from)))
+    lastexprs <- apply(exprsx[,nextSel],1,function(x) ifelse(any(is.na(x)),NA,approxfun(x=nextTime,y=x)(to)))
+    exprsx <- cbind(firstexprs,exprsx[,sel],lastexprs)
+    x <- c(from,time.est[sel],to)
+  } else if (missing(from) & !missing(to)) {
+    uniqueTimesInSoque <- as.logical(sapply(unique(soque),function(x) !duplicated(time.est[soque==x]))) #if we have repeated times use only first
+    sel <- soque == soqueName & time.est<=to & uniqueTimesInSoque
+    nextTime <- c(max(time.est[soque == soqueName & time.est<to]),min(time.est[soque == soqueName & time.est>to]))
+    nextSel <- soque == soqueName & time.est %in% nextTime & uniqueTimesInSoque
+    lastexprs <- apply(exprsx[,nextSel],1,function(x) ifelse(any(is.na(x)),NA,approxfun(x=nextTime,y=x)(to)))        
+    exprsx <- cbind(exprsx[,sel],lastexprs)
+    x <- c(time.est[sel],to)
+  }
+  ans <- matrix(NA,nrow(exprsx))
+  notNaGenes <- !apply(exprsx,1,function(x) any(is.na(x)))
+  y <- exprsx[notNaGenes,]
+  idx <- 1:(ncol(exprsx)-1)
+  base <- x[idx+1] - x[idx]
+  high.square <- sapply(idx,function(x) rowMin(y[,c(x,x+1)]))
+  high.triangle <- sapply(idx,function(x) rowMax(y[,c(x,x+1)]))
+  square <- rowSums(t(apply(high.square,1,function(x) x * base)))
+  triangle <- high.triangle - high.square
+  triangle <- rowSums(t(apply(triangle,1,function(x) x * base / 2)))
+  area <- square + triangle
+  ans[notNaGenes] <- area
+  return(ans)
+}
+
+getArea <- function(mybreaks,soques,exprsx,time.est,soque) {
+  area1 <- sapply(soques,function(x) compArea(x,soque,exprsx,time.est,to=mybreaks[3]))
+  area2 <- sapply(soques,function(x) compArea(x,soque,exprsx,time.est,from=mybreaks[2],to=mybreaks[4]))
+  area3 <- sapply(soques,function(x) compArea(x,soque,exprsx,time.est,from=mybreaks[3]))
+  area4 <- area1 + area3 - area2
+  colnames(area1) <- paste('left',colnames(area1),sep='.')
+  colnames(area2) <- paste('mid',colnames(area2),sep='.')
+  colnames(area3) <- paste('right',colnames(area3),sep='.')
+  colnames(area4) <- paste('sides',colnames(area4),sep='.')
+  area <- cbind(area1,area2,area3,area4)
+  area1.maxDif <- apply(area1,1,getMaxDif)
+  area2.maxDif <- apply(area2,1,getMaxDif)
+  area3.maxDif <- apply(area3,1,getMaxDif)
+  area4.maxDif <- apply(area4,1,getMaxDif)
+  area.maxDif <- cbind(area1.maxDif,area2.maxDif,area3.maxDif,area4.maxDif)
+  colnames(area.maxDif) <- cbind('area.left','area.mid','area.right','area.sides')
+  ans <- list(area=area,area.maxDif=area.maxDif)
+  return(ans)
+}
+
+getSampledSoque <- function(x,soque,time) {
+  ans <- vector('character',length=length(soque))
+  for (i in 1:length(unique(time))) {
+    if (i==1) {
+      ans[time==unique(time)[i]] <- as.character(sample(soque[time==unique(time[i])])) #sample soques (on each time)
+    } else {
+      tmpsoque <- soque[time==unique(time[i])]
+      numSoques <- length(time[time==unique(time)[i]])
+      prvTimeLast <- ans[time==unique(time[i-1])][numSoques]
+      ans[time==unique(time)[i]][sample(numSoques-1)[1]] <- prvTimeLast
+      tmpsoque <- tmpsoque[tmpsoque!=prvTimeLast]
+      for (j in 1:numSoques) {
+        if (ans[time==unique(time)[i]][j]=='') {
+          tmpsoqueIn <- as.character(sample(tmpsoque[tmpsoque!=ans[time==unique(time)[i-1]][j]]))[1]        
+          ans[time==unique(time)[i]][j] <- tmpsoqueIn
+          tmpsoque <- tmpsoque[tmpsoque!=tmpsoqueIn]
+        }
+      }
+    }
+  }
+  return(ans)
+}
+
+getPval <- function(soqueNames,sampledSoque,exprsx,time,time.est,maxDif,b,mybreaks) {
+  myFun <- function(soqueNames,soque,exprsx,time,time.est,mybreaks) {
+    myOrder <- order(soque,time.est)
+    area.maxDif <- getArea(mybreaks,soqueNames,exprsx[,myOrder],time.est[myOrder],soque[myOrder])[['area.maxDif']]
+    maxDif <- apply(area.maxDif,1,function(x) ifelse(any(!is.na(x)),max(x,na.rm=TRUE),NA))
+    return(maxDif)
+  }
+  if (mc.cores==1) {
+    maxDif.perm <- lapply(sampledSoque,function(x) myFun(soqueNames,x,exprsx,time,time.est,mybreaks))
+  } else {
+    maxDif.perm <- mclapply(sampledSoque,function(x) myFun(soqueNames,x,exprsx,time,time.est,mybreaks),mc.preschedule=TRUE,mc.cores=mc.cores)
+  }
+  maxDif.perm <- do.call(cbind,maxDif.perm)
+  maxDif.perm <<- maxDif.perm
+  ans <- sapply(1:nrow(maxDif.perm),function(i) sum(maxDif.perm[i,][!is.na(maxDif.perm[i,])] > maxDif[i]) / sum(!is.na(maxDif.perm[i,])) )
+  return(ans)
+}
+
+#params
+set.seed('20101028')
+b <- 10 #number of permutations
+#I do not plan to use the permutation analysis for this study. I set to 10 to make sure it does not spend hours doing it, or later remove.
+
+#load and order
+load(file.path(figuresPath,'xgene_estimated.RData'))
+myOrder <- order(pData(xgene)$soca,pData(xgene)$time)
+xgene <- xgene[,myOrder]
+estim <- estim[,myOrder]
+geneDesc <- fData(xgene)$Name
+
+#preprocess
+soques <- levels(pData(xgene)$soca)
+#if (!file.exists(file.path(figuresPath,'soques_genelevel_estimated/'))) dir.create(file.path(figuresPath,'soques_genelevel_estimated/'))
+#outDir <- file.path(figuresPath,'soques_genelevel_estimated/')
+outDir <- file.path(figuresPath)
+#Now goes to general results folder, not to Plots folder.
+time.est <- pData(xgene)$time
+time <- as.numeric(substr(sampleNames(xgene),nchar(sampleNames(xgene))-1,nchar(sampleNames(xgene))))
+soque <- pData(xgene)$soca
+exprsx <- exprs(xgene)
+
+#set same min and max time
+maxMin.time.est <- max(sapply(unique(soque),function(x) min(time.est[soque==x])))
+minMax.time.est <- min(sapply(unique(soque),function(x) max(time.est[soque==x])))
+exprsx <- timeCorrectedEpxrs(exprsx,maxMin.time.est,minMax.time.est,time,soque)
+sel.previous2first <- as.logical(sapply(unique(soque),function(x) time.est[soque==x]==max(time.est[soque==x][time.est[soque==x]<=maxMin.time.est])))
+sel.next2last <- as.logical(sapply(unique(soque),function(x) time.est[soque==x]==min(time.est[soque==x][time.est[soque==x]>=minMax.time.est])))
+pData(xgene)$time[sel.previous2first] <- maxMin.time.est
+pData(xgene)$time[sel.next2last] <- minMax.time.est
+time.est <- pData(xgene)$time
+#solve issue where two points are before first or after last
+myFun <- function(x,gb) {
+  mytime <- time.est[soque==x]
+  afterLast <- mytime[mytime>=minMax.time.est]
+  if (length(afterLast)>1) {
+    if (gb=='good') ans <- mytime==minMax.time.est else ans <- mytime>minMax.time.est
+  } else {
+    ans <- rep(FALSE,length(mytime))
+  }
+  return(ans)
+}
+good <- as.logical(sapply(unique(soque),function(x) myFun(x,'good')))
+wrong <- as.logical(sapply(unique(soque),function(x) myFun(x,'wrong')))
+exprsx[,wrong] <- exprsx[,good]
+time.est[wrong] <- time.est[good]
+
+#set the minimum value of each gene equal to 0
+notAllNa <- apply(exprsx,1,function(x) any(!is.na(x)))
+exprsx[notAllNa,] <- t(apply(exprsx[notAllNa,],1,function(x) x - min(x,na.rm=TRUE))) #
+
+#compute areas
+mybreaks <- seq(maxMin.time.est,minMax.time.est,length.out=5)
+tmp <- getArea(mybreaks,soques,exprsx,time.est,soque)
+area <- tmp[['area']]; area.maxDif <- tmp[['area.maxDif']]
+maxDif <- apply(area.maxDif,1,function(x) ifelse(any(!is.na(x)),max(x,na.rm=TRUE),NA))
+
+#get pval
+dummy <- as.list(1:b)
+if (mc.cores==1) {
+  sampledSoque <- lapply(dummy,function(x) getSampledSoque(x,soque,time))
+} else {
+  sampledSoque <- mclapply(dummy,function(x) getSampledSoque(x,soque,time),mc.set.seed=TRUE,mc.cores=mc.cores)
+}
+pvalue <- getPval(soques,sampledSoque,exprsx,time,time.est,maxDif,b,mybreaks) #takes long!! With 10 permutations (b=10) about 10 minutes.
+pvalue.adj <- p.adjust(pvalue,'BH')
+
+#export
+xout <- data.frame(Name=geneDesc,area.maxDif,maxDif,pvalue,pvalue.adj,estimatedPoints=rowSums(estim))
+xout <- xout[order(xout[,'maxDif'],decreasing=TRUE),]
+write.csv(xout,file.path(outDir,'areas_estimated.csv'),na='')
+#sampledSoquesOut <- cbind(time,do.call(cbind,sampledSoque)); colnames(sampledSoquesOut)[-1] <- paste('random',1:(ncol(sampledSoquesOut)-1))
+#write.csv(sampledSoquesOut,file.path(outDir,'sampledSoques.csv'),row.names=FALSE)
+#rownames(maxDif.perm) <- featureNames(xgene)
+#maxDif.perm.out <- cbind(maxDif,maxDif.perm); colnames(maxDif.perm.out)[-1] <- paste('random',1:(ncol(maxDif.perm.out)-1))
+#write.csv(maxDif.perm.out,file.path(outDir,'maxDifPerm.csv'))
+#if (b>100) write.csv(maxDif.perm.out[,1:101],file.path(outDir,'maxDifPerm_100.csv'))
+#This lines were to create some files to check the performance of the permutation tests, not necessary now.
+xout <- data.frame(Name=geneDesc,area)
+rownames(xout) <- featureNames(xgene)
+write.csv(xout,file.path(outDir,'areas_subclons.csv'),na='')
