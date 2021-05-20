@@ -1,0 +1,107 @@
+Pipeline performed by Elisabet Tintó-Font
+3D7-A and 3D7-A-HS Whole Genome Sequencing data analysis.
+Paired-end reads were obtained, corresponding to R1 and R2 files.
+Two rounds of sequencing were performed for each sample (ex. for sample 41_1, first round is labeled as "41_1" and second round as "41_1_2"). After mapping, both files were merged in a single file named "..._merged".
+File names correspond to: 41_1 (3D7-A-HS r1), 41_2 (3D7-A-HS r2), C1 (3D7-A r1) and C2 (3D7-A r2).
+____________________________________________
+
+##############################################
+######## INDIVIDUAL SAMPLE PROCESSING ########
+#### EXAMPLE OF SAMPLE 41_1 (3D7-A-HS r1) ####
+##############################################
+
+1. TRIM ADAPTERS (CUTADAPT) 
+version 1.8
+cutadapt -a AGATCGGAAGAGCACACGTCTGAACTCCAGTCACGCCAATATCTCGTATGCCGTCTTCTGCTTG -A AGATCGGAAGAGCGTCGTGTAGGGAAAGAGTGTAGATCTCGGTGGTCGCCGTATCATT -m 20 -o 41_1_R1_cutadapt_m.fastq -p 41_1_R2_cutadapt_m.fastq 41-1_S2_L001_R1_001.fastq.gz 41-1_S2_L001_R2_001.fastq.gz
+
+cutadapt -a AGATCGGAAGAGCACACGTCTGAACTCCAGTCACGCCAATATCTCGTATGCCGTCTTCTGCTTG -A AGATCGGAAGAGCGTCGTGTAGGGAAAGAGTGTAGATCTCGGTGGTCGCCGTATCATT -m 20 -o 41_1_R1_2_cutadapt_m.fastq -p 41_1_R2_2_cutadapt_m.fastq 41-1_S2_L001_R1_001_2.fastq.gz 41-1_S2_L001_R2_001_2.fastq.gz
+
+2. MAPPING (BOWTIE2)
+version 2.1.0
+bowtie2 --local -x PlasmoDB-24_Pfalciparum3D7_Genome -X 1000 -1 41_1_R1_cutadapt_m.fastq -2 41_1_R2_cutadapt_m.fastq -S 41_1_bowtie2_cutadaptm.sam
+
+bowtie2 --local -x PlasmoDB-24_Pfalciparum3D7_Genome -X 1000 -1 41_1_R1_2_cutadapt_m.fastq -2 41_1_R2_2_cutadapt_m.fastq -S 41_1_2_bowtie2_cutadaptm.sam
+
+3. INDEX (SAMTOOLS)
+version 1.18
+samtools view -Sb 41_1_bowtie2_cutadaptm.sam|samtools sort - 41_1_bowtie2_cutadaptm.sorted
+samtools index 41_1_bowtie2_cutadaptm.sorted.bam
+
+samtools view -Sb 41_1_2_bowtie2_cutadaptm.sam|samtools sort - 41_1_2_bowtie2_cutadaptm.sorted
+samtools index 41_1_2_bowtie2_cutadaptm.sorted.bam
+
+4. REORDER (PICARD TOOLS)  
+version 1.138
+picard-tools-1.138/picard.jar ReorderSam INPUT=41_1_bowtie2_cutadaptm.sorted.bam OUTPUT=41_1_bowtie2_cutadaptm_reorder.bam REFERENCE=PlasmoDB-24_Pfalciparum3D7_Genome.fasta CREATE_INDEX=true 
+
+picard-tools-1.138/picard.jar ReorderSam INPUT=41_1_2_bowtie2_cutadaptm.sorted.bam OUTPUT=41_1_2_bowtie2_cutadaptm_reorder.bam REFERENCE=PlasmoDB-24_Pfalciparum3D7_Genome.fasta CREATE_INDEX=true
+
+5. MERGE BAM FILES FROM TWO SEQUENCING ROUNDS (PICARD TOOLS)  
+version 1.138
+/picard-tools-1.138/picard.jar MergeSamFiles INPUT=41_1_bowtie2_cutadaptm_reorder.bam INPUT=41_1_2_bowtie2_cutadaptm_reorder.bam OUTPUT=41_1_cutadaptm_picardmerged.bam SORT_ORDER=coordinate CREATE_INDEX=true
+
+6. SORT (PICARD TOOLS)
+version 1.138
+/picard-tools-1.138/picard.jar SortSam INPUT=41_1_cutadaptm_picardmerged.bam OUTPUT=41_1_cutadaptm_picardmerged_gatksorted.bam SO=coordinate VALIDATION_STRINGENCY=LENIENT CREATE_INDEX=true 
+
+7. MARK DUPLICATES (PICARD TOOLS)
+version 1.138
+/picard-tools-1.138/picard.jar MarkDuplicates INPUT=41_1_cutadaptm_picardmerged_gatksorted.bam OUTPUT=41_1_cutadaptm_picardmerged_gatkdedup.bam METRICS_FILE=41_1_metrics.txt CREATE_INDEX=true VALIDATION_STRINGENCY=LENIENT 
+
+8. ADD READ INFORMATION (PICARD TOOLS)
+version 1.138
+/picard-tools-1.138/picard.jar AddOrReplaceReadGroups INPUT=41_1_cutadaptm_picardmerged_gatkdedup.bam OUTPUT=41_1_cutadaptm_picardmerged_gatkaddrg.bam RGID=41-1 RGLB=lib1 RGPL=illumina RGPU=unit1 RGSM=41-1 
+
+9. INDEX BAM (PICARD TOOLS)
+version 1.138
+/picard-tools-1.138/picard.jar BuildBamIndex INPUT=41_1_cutadaptm_picardmerged_gatkaddrg.bam 
+
+10. CREATE .LIST (GATK)
+version 3.4-46
+/GenomeAnalysis/GenomeAnalysisTK.jar -T RealignerTargetCreator -R PlasmoDB-24_Pfalciparum3D7_Genome.fasta -I 41_1_cutadaptm_picardmerged_gatkaddrg.bam -o 41_1_cutadaptm_picardmerged_gatkaddrg.bam.list 
+
+11. REALIGN (GATK)
+version 3.4-46
+/GenomeAnalysis/GenomeAnalysisTK.jar -T IndelRealigner -R PlasmoDB-24_Pfalciparum3D7_Genome.fasta -I 41_1_cutadaptm_picardmerged_gatkaddrg.bam -targetIntervals 41_1_cutadaptm_picardmerged_gatkaddrg.bam.list -o 41_1_cutadaptm_picardmerged_gatkaddrg_realigned.bam 
+
+12. VERIFY AND FIX PAIRED-END READS (PICARD TOOLS)
+version 1.138
+/picard-tools-1.138/picard.jar FixMateInformation INPUT=41_1_cutadaptm_picardmerged_gatkaddrg_realigned.bam OUTPUT=41_1_cutadaptm_picardmerged_gatkaddrg_realigned_fixed.bam SO=coordinate VALIDATION_STRINGENCY=LENIENT CREATE_INDEX=true 
+
+13. FIND HIGH CONFIDENCE SNPs (GATK)
+version 3.4-46
+/GenomeAnalysis/GenomeAnalysisTK.jar -T UnifiedGenotyper -R PlasmoDB-24_Pfalciparum3D7_Genome.fasta -ploidy 2 -glm BOTH -I 41_1_cutadaptm_picardmerged_gatkaddrg_realigned_fixed.bam -o 41_1_cutadaptm_picardmerged_gatkaddrg_realigned_fixed_unifiedgenotyper.vcf
+
+14. BASE RECALIBRATION BASED ON HIGH CONFIDENCE SNPs (GATK)
+version 3.4-46
+/GenomeAnalysis/GenomeAnalysisTK.jar -T BaseRecalibrator -R PlasmoDB-24_Pfalciparum3D7_Genome.fasta -I 41_1_cutadaptm_picardmerged_gatkaddrg_realigned_fixed.bam -knownSites 41_1_cutadaptm_picardmerged_gatkaddrg_realigned_fixed_unifiedgenotyper.vcf -o  41_1_cutadaptm_picardmerged_gatkaddrg_realigned_fixed_unifiedgenotyper_recal.grp
+
+15. PRINT READS (GATK)
+version 3.4-46
+/GenomeAnalysis/GenomeAnalysisTK.jar -T PrintReads -R PlasmoDB-24_Pfalciparum3D7_Genome.fasta -I 41_1_cutadaptm_picardmerged_gatkaddrg_realigned_fixed.bam -BQSR 41_1_cutadaptm_picardmerged_gatkaddrg_realigned_fixed_unifiedgenotyper_recal.grp -o 41_1_cutadaptm_picardmerged_gatkaddrg_realigned_fixed_unifiedgenotyper_recal_printreads_mq0.bam --read_filter MappingQualityZero
+
+
+#################################
+######## VARIANT CALLING ########
+#################################
+
+1. MERGE ALL FILES (PICARD TOOLS)
+version 1.138
+/picard-tools-1.138/picard.jar MergeSamFiles INPUT=41_1_cutadaptm_picardmerged_gatkaddrg_realigned_fixed_unifiedgenotyper_recal_printreads_mq0.bam INPUT=41_2_cutadaptm_picardmerged_gatkaddrg_realigned_fixed_unifiedgenotyper_recal_printreads_mq0.bam INPUT=C1_cutadaptm_picardmerged_gatkaddrg_realigned_fixed_unifiedgenotyper_recal_printreads.bam INPUT=C2_cutadaptm_picardmerged_gatkaddrg_realigned_fixed_unifiedgenotyper_recal_printreads.bam OUTPUT=all_picardmerged.bam SORT_ORDER=coordinate CREATE_INDEX=true 
+
+2. REALIGN (GATK)
+version 3.4-46
+/GenomeAnalysis/GenomeAnalysisTK.jar -T RealignerTargetCreator -R PlasmoDB-24_Pfalciparum3D7_Genome.fasta -I all_picardmerged.bam -o all_picardmerged.bam.list 
+GenomeAnalysis/GenomeAnalysisTK.jar -T IndelRealigner -R PlasmoDB-24_Pfalciparum3D7_Genome.fasta -I all_picardmerged.bam -targetIntervals all_picardmerged.bam.list -o all_picardmerged_realigned.bam 
+
+3. VARIANT CALLING (GATK)
+version 3.4-46
+/GenomeAnalysis/GenomeAnalysisTK.jar -T UnifiedGenotyper -R PlasmoDB-24_Pfalciparum3D7_Genome.fasta -ploidy 2 -glm BOTH -stand_call_conf 0 -stand_emit_conf 0 -mbq 0 --min_quality_score 0 --max_quality_score 100 -I all_picardmerged_realigned.bam -o all_unifiedgenotyper_A.vcf
+
+4. FILTRATION (GATK)
+version 3.4-46
+/GenomeAnalysis/GenomeAnalysisTK.jar -T VariantFiltration -R PlasmoDB-24_Pfalciparum3D7_Genome.fasta -o all_unifiedgenotyper_A_variantFiltrationGATK.vcf --variant all_unifiedgenotyper_A.vcf --filterExpression "QUAL < 20.0" --filterName "QUALinf20" --genotypeFilterExpression "DP < 10" --genotypeFilterName "DPinf10" 
+
+5. MANUAL FILTERS (MICROSOFT EXCEL 2010, MANUAL CURATION)
+- Eliminate SNPs flagged as "QUALinf20" or "DPinf10".
+- Only keep SNPs with frequency>0.25% in both replicates and with DP>20 (read depth).
