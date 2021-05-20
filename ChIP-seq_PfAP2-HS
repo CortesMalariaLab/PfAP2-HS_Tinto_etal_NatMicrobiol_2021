@@ -1,0 +1,67 @@
+Pipeline performed by: Timothy J. Russell
+AP2-HS ChIP-seq data analysis
+____________________________________________________
+
+###################################################
+########## INDIVIDUAL SAMPLE PROCESSING ###########
+###################################################
+
+Steps 1-5 were performed using the Galaxy utilities.
+
+1. Assess the quality of the reads using FastQC.
+Galaxy version 0.63
+
+2. Trim adapter sequences using Trimmomatic.
+Galaxy version 0.32.3
+parameters: paired end for datasets sequenced outside of PSU (everything except for 2 single end sequenced controls)
+perform initial illuminaclip step: yes
+adapter sequences to use: TruSeq3 paired ended for illumina
+Maximum mismatch count which will still allow a full match to be performed: 2
+How accurate the match between the two 'adapter ligated' reads must be for PE palindrome read alignment: 30
+How accurate the match between any adapter etc. sequence must be against a read: 10
+Select Trimmomatic operation to perform: silding window trimming
+Number of bases to average across: 4
+Average quality required: 4
+For single ended datasets, the input type is single ended fastq and the adapter sequences are TruSeq3 for single ended illumina
+
+3. Map reads using BWA-MEM.
+Galaxy version 0.4.1
+Map against the PlasmoDB Pf3D7 genome v.28
+Analysis mode: simple Illumina
+Select paired end mapping for all datasets except the two single ended
+
+4. Filter multi-mapping reads using SAMtools.
+Galaxy version 1.1.2
+Command: filter SAM or BAM, output SAM or BAM
+Minimum MAPQ quality score: 1
+
+5. Call peaks using MACS2.
+Galaxy version 2.2.6
+q value cutoff=0.01
+
+6. Sort bedfiles for downstream use  and find the closest gene to MACS2 peak using BEDtools.
+version 2.28.0
+bedtools sort -i /mnt/c/AP2HS_peak_file.bed
+bedtools closest -D "ref" -a /mnt/c/AP2HS_peak_file -b /mnt/c/PlasmoDB-36_Pfalciparum3D7.gff > /mnt/c/path_to_file
+
+7. Create log2 bigwig comparison of .bam files of input and ip samples using deeptools.
+version 3.2.1
+bamCompare -b1 bamfile1_ip -b2 bamfile2_Input -o path_to_output
+
+8. Intersect ChIP-seq peaks using BEDtools.
+version 2.28.0
+bedtools intersect -a /mnt/c/AP2HS_peak1.bed -b /mnt/c/Users/AP2HSpeak2.bed > /mnt/c/AP2HS_overlapped_peaks.bed
+
+
+
+###################################################
+############ DIFFERENTIAL PEAK CALLING ############
+###################################################
+
+1. Call peaks for single end sequencing files using MACS2.
+version 2.2.6
+callpeak -t /mnt/c/AP2HS_ip.bam -c /mnt/c/AP2_HS_Input.bam -f BAM -g 20000000 -n testHS2 --outdir /mnt/c/path_to_output -s 250 -B -q 0.01 --nomodel --extsize 200
+
+2. Call peaks for paired end sequencing files using MACS2. 
+version 2.2.6
+callpeak -t /mnt/c/AP2HS_ip.bam -c /mnt/c/AP2_HS_Input.bam -f BAMPE -g 20000000 -n testHS2 --outdir /mnt/c/path_to_output -s 250 -B -q 0.01 --nomodel --extsize 200
